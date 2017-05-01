@@ -41,6 +41,7 @@ DEPS = [
     "unittest2",
     "wheel",
     "wmi",
+    "requests"
 ]
 _cmds = {}
 
@@ -350,6 +351,13 @@ def test_unicode():
     """Run unicode tests"""
     install()
     sh("%s -m unittest -v psutil.tests.test_unicode" % PYTHON)
+
+
+@cmd
+def test_contracts():
+    """Run contracts tests"""
+    install()
+    sh("%s -m unittest -v psutil.tests.test_contracts" % PYTHON)
 
 
 @cmd

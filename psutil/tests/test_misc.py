@@ -10,6 +10,7 @@ Miscellaneous tests.
 """
 
 import ast
+import collections
 import contextlib
 import errno
 import imp
@@ -21,8 +22,6 @@ import stat
 import sys
 
 from psutil import LINUX
-from psutil import NETBSD
-from psutil import OPENBSD
 from psutil import OSX
 from psutil import POSIX
 from psutil import WINDOWS
@@ -34,10 +33,11 @@ from psutil.tests import APPVEYOR
 from psutil.tests import bind_unix_socket
 from psutil.tests import chdir
 from psutil.tests import create_proc_children_pair
+from psutil.tests import create_sockets
 from psutil.tests import get_free_port
 from psutil.tests import get_test_subprocess
+from psutil.tests import HAS_MEMORY_MAPS
 from psutil.tests import importlib
-from psutil.tests import inet_socketpair
 from psutil.tests import mock
 from psutil.tests import reap_children
 from psutil.tests import retry
@@ -46,6 +46,7 @@ from psutil.tests import run_test_module_by_name
 from psutil.tests import safe_rmpath
 from psutil.tests import SCRIPTS_DIR
 from psutil.tests import sh
+from psutil.tests import tcp_socketpair
 from psutil.tests import TESTFN
 from psutil.tests import TOX
 from psutil.tests import TRAVIS
@@ -414,7 +415,7 @@ class TestScripts(unittest.TestCase):
                     self.fail('no test defined for %r script'
                               % os.path.join(SCRIPTS_DIR, name))
 
-    @unittest.skipUnless(POSIX, "POSIX only")
+    @unittest.skipIf(not POSIX, "POSIX only")
     def test_executable(self):
         for name in os.listdir(SCRIPTS_DIR):
             if name.endswith('.py'):
@@ -454,11 +455,11 @@ class TestScripts(unittest.TestCase):
     def test_ifconfig(self):
         self.assert_stdout('ifconfig.py')
 
-    @unittest.skipIf(OPENBSD or NETBSD, "platform not supported")
+    @unittest.skipIf(not HAS_MEMORY_MAPS, "not supported")
     def test_pmap(self):
         self.assert_stdout('pmap.py', args=str(os.getpid()))
 
-    @unittest.skipUnless(OSX or WINDOWS or LINUX, "platform not supported")
+    @unittest.skipIf(not OSX or WINDOWS or LINUX, "platform not supported")
     def test_procsmem(self):
         self.assert_stdout('procsmem.py')
 
@@ -478,14 +479,14 @@ class TestScripts(unittest.TestCase):
         output = self.assert_stdout('pidof.py', args=psutil.Process().name())
         self.assertIn(str(os.getpid()), output)
 
-    @unittest.skipUnless(WINDOWS, "WINDOWS only")
+    @unittest.skipIf(not WINDOWS, "WINDOWS only")
     def test_winservices(self):
         self.assert_stdout('winservices.py')
 
     def test_cpu_distribution(self):
         self.assert_syntax('cpu_distribution.py')
 
-    @unittest.skipIf(TRAVIS, "unreliable on travis")
+    @unittest.skipIf(TRAVIS, "unreliable on TRAVIS")
     def test_temperatures(self):
         if hasattr(psutil, "sensors_temperatures") and \
                 psutil.sensors_temperatures():
@@ -493,7 +494,7 @@ class TestScripts(unittest.TestCase):
         else:
             self.assert_syntax('temperatures.py')
 
-    @unittest.skipIf(TRAVIS, "unreliable on travis")
+    @unittest.skipIf(TRAVIS, "unreliable on TRAVIS")
     def test_fans(self):
         if hasattr(psutil, "sensors_fans") and psutil.sensors_fans():
             self.assert_stdout('fans.py')
@@ -685,7 +686,7 @@ class TestProcessUtils(unittest.TestCase):
 
 class TestNetUtils(unittest.TestCase):
 
-    @unittest.skipUnless(POSIX, "POSIX only")
+    @unittest.skipIf(not POSIX, "POSIX only")
     def test_bind_unix_socket(self):
         with unix_socket_path() as name:
             sock = bind_unix_socket(name)
@@ -701,10 +702,9 @@ class TestNetUtils(unittest.TestCase):
             with contextlib.closing(sock):
                 self.assertEqual(sock.type, socket.SOCK_DGRAM)
 
-    def test_inet_socketpair(self):
+    def tcp_tcp_socketpair(self):
         addr = ("127.0.0.1", get_free_port())
-        server, client = inet_socketpair(
-            socket.AF_INET, socket.SOCK_STREAM, addr=addr)
+        server, client = tcp_socketpair(socket.AF_INET, addr=addr)
         with contextlib.closing(server):
             with contextlib.closing(client):
                 # Ensure they are connected and the positions are
@@ -713,7 +713,7 @@ class TestNetUtils(unittest.TestCase):
                 self.assertEqual(client.getpeername(), addr)
                 self.assertNotEqual(client.getsockname(), addr)
 
-    @unittest.skipUnless(POSIX, "POSIX only")
+    @unittest.skipIf(not POSIX, "POSIX only")
     def test_unix_socketpair(self):
         p = psutil.Process()
         num_fds = p.num_fds()
@@ -730,6 +730,21 @@ class TestNetUtils(unittest.TestCase):
             finally:
                 client.close()
                 server.close()
+
+    def test_create_sockets(self):
+        with create_sockets() as socks:
+            fams = collections.defaultdict(int)
+            types = collections.defaultdict(int)
+            for s in socks:
+                fams[s.family] += 1
+                # work around http://bugs.python.org/issue30204
+                types[s.getsockopt(socket.SOL_SOCKET, socket.SO_TYPE)] += 1
+            self.assertGreaterEqual(fams[socket.AF_INET], 2)
+            self.assertGreaterEqual(fams[socket.AF_INET6], 2)
+            if POSIX:
+                self.assertGreaterEqual(fams[socket.AF_UNIX], 2)
+            self.assertGreaterEqual(types[socket.SOCK_STREAM], 2)
+            self.assertGreaterEqual(types[socket.SOCK_DGRAM], 2)
 
 
 if __name__ == '__main__':

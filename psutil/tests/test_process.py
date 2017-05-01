@@ -13,19 +13,16 @@ import os
 import select
 import signal
 import socket
-import stat
 import subprocess
 import sys
 import tempfile
 import textwrap
 import time
-import traceback
 import types
 
 import psutil
 
 from psutil import BSD
-from psutil import FREEBSD
 from psutil import LINUX
 from psutil import NETBSD
 from psutil import OPENBSD
@@ -33,26 +30,30 @@ from psutil import OSX
 from psutil import POSIX
 from psutil import SUNOS
 from psutil import WINDOWS
-from psutil._compat import callable
 from psutil._compat import long
 from psutil._compat import PY3
-from psutil._compat import unicode
 from psutil.tests import APPVEYOR
 from psutil.tests import call_until
-from psutil.tests import check_connection_ntuple
+from psutil.tests import copyload_shared_lib
 from psutil.tests import create_exe
 from psutil.tests import create_proc_children_pair
 from psutil.tests import enum
 from psutil.tests import get_test_subprocess
 from psutil.tests import get_winver
 from psutil.tests import GLOBAL_TIMEOUT
+from psutil.tests import HAS_CPU_AFFINITY
+from psutil.tests import HAS_ENVIRON
+from psutil.tests import HAS_IONICE
+from psutil.tests import HAS_MEMORY_MAPS
+from psutil.tests import HAS_PROC_CPU_NUM
+from psutil.tests import HAS_PROC_IO_COUNTERS
+from psutil.tests import HAS_RLIMIT
 from psutil.tests import mock
 from psutil.tests import PYPY
 from psutil.tests import pyrun
 from psutil.tests import PYTHON
 from psutil.tests import reap_children
 from psutil.tests import retry_before_failing
-from psutil.tests import RLIMIT_SUPPORT
 from psutil.tests import run_test_module_by_name
 from psutil.tests import safe_rmpath
 from psutil.tests import sh
@@ -64,9 +65,7 @@ from psutil.tests import ThreadTask
 from psutil.tests import TOX
 from psutil.tests import TRAVIS
 from psutil.tests import unittest
-from psutil.tests import VALID_PROC_STATUSES
 from psutil.tests import wait_for_pid
-from psutil.tests import warn
 from psutil.tests import WIN_VISTA
 
 
@@ -255,14 +254,6 @@ class TestProcess(unittest.TestCase):
         for name in times._fields:
             time.strftime("%H:%M:%S", time.localtime(getattr(times, name)))
 
-    # Test Process.cpu_times() against os.times()
-    # os.times() is broken on Python 2.6
-    # http://bugs.python.org/issue1040026
-    # XXX fails on OSX: not sure if it's for os.times(). We should
-    # try this with Python 2.7 and re-enable the test.
-
-    @unittest.skipUnless(sys.version_info > (2, 6, 1) and not OSX,
-                         'os.times() broken on OSX + PY2.6.1')
     def test_cpu_times_2(self):
         user_time, kernel_time = psutil.Process().cpu_times()[:2]
         utime, ktime = os.times()[:2]
@@ -276,8 +267,7 @@ class TestProcess(unittest.TestCase):
         if (max([kernel_time, ktime]) - min([kernel_time, ktime])) > 0.1:
             self.fail("expected: %s, found: %s" % (ktime, kernel_time))
 
-    @unittest.skipUnless(hasattr(psutil.Process, "cpu_num"),
-                         "platform not supported")
+    @unittest.skipIf(not HAS_PROC_CPU_NUM, "not supported")
     def test_cpu_num(self):
         p = psutil.Process()
         num = p.cpu_num()
@@ -303,7 +293,7 @@ class TestProcess(unittest.TestCase):
         # make sure returned value can be pretty printed with strftime
         time.strftime("%Y %m %d %H:%M:%S", time.localtime(p.create_time()))
 
-    @unittest.skipUnless(POSIX, 'POSIX only')
+    @unittest.skipIf(not POSIX, 'POSIX only')
     @unittest.skipIf(TRAVIS, 'not reliable on TRAVIS')
     def test_terminal(self):
         terminal = psutil.Process().terminal()
@@ -313,8 +303,7 @@ class TestProcess(unittest.TestCase):
         else:
             self.assertIsNone(terminal)
 
-    @unittest.skipUnless(LINUX or BSD or WINDOWS,
-                         'platform not supported')
+    @unittest.skipIf(not HAS_PROC_IO_COUNTERS, 'not supported')
     @skip_on_not_implemented(only_if=LINUX)
     def test_io_counters(self):
         p = psutil.Process()
@@ -358,8 +347,8 @@ class TestProcess(unittest.TestCase):
             self.assertGreaterEqual(io2[i], 0)
             self.assertGreaterEqual(io2[i], 0)
 
-    @unittest.skipUnless(LINUX or (WINDOWS and get_winver() >= WIN_VISTA),
-                         'platform not supported')
+    @unittest.skipIf(not HAS_IONICE, "not supported")
+    @unittest.skipIf(WINDOWS and get_winver() < WIN_VISTA, 'not supported')
     def test_ionice(self):
         if LINUX:
             from psutil import (IOPRIO_CLASS_NONE, IOPRIO_CLASS_RT,
@@ -405,8 +394,8 @@ class TestProcess(unittest.TestCase):
             finally:
                 p.ionice(original)
 
-    @unittest.skipUnless(LINUX or (WINDOWS and get_winver() >= WIN_VISTA),
-                         'platform not supported')
+    @unittest.skipIf(not HAS_IONICE, "not supported")
+    @unittest.skipIf(WINDOWS and get_winver() < WIN_VISTA, 'not supported')
     def test_ionice_errs(self):
         sproc = get_test_subprocess()
         p = psutil.Process(sproc.pid)
@@ -428,7 +417,7 @@ class TestProcess(unittest.TestCase):
             self.assertRaises(ValueError, p.ionice, 3)
             self.assertRaises(TypeError, p.ionice, 2, 1)
 
-    @unittest.skipUnless(LINUX and RLIMIT_SUPPORT, "LINUX >= 2.6.36 only")
+    @unittest.skipIf(not HAS_RLIMIT, "not supported")
     def test_rlimit_get(self):
         import resource
         p = psutil.Process(os.getpid())
@@ -451,7 +440,7 @@ class TestProcess(unittest.TestCase):
                 self.assertGreaterEqual(ret[0], -1)
                 self.assertGreaterEqual(ret[1], -1)
 
-    @unittest.skipUnless(LINUX and RLIMIT_SUPPORT, "LINUX >= 2.6.36 only")
+    @unittest.skipIf(not HAS_RLIMIT, "not supported")
     def test_rlimit_set(self):
         sproc = get_test_subprocess()
         p = psutil.Process(sproc.pid)
@@ -464,7 +453,7 @@ class TestProcess(unittest.TestCase):
         with self.assertRaises(ValueError):
             p.rlimit(psutil.RLIMIT_NOFILE, (5, 5, 5))
 
-    @unittest.skipUnless(LINUX and RLIMIT_SUPPORT, "LINUX >= 2.6.36 only")
+    @unittest.skipIf(not HAS_RLIMIT, "not supported")
     def test_rlimit(self):
         p = psutil.Process()
         soft, hard = p.rlimit(psutil.RLIMIT_FSIZE)
@@ -483,7 +472,7 @@ class TestProcess(unittest.TestCase):
             p.rlimit(psutil.RLIMIT_FSIZE, (soft, hard))
             self.assertEqual(p.rlimit(psutil.RLIMIT_FSIZE), (soft, hard))
 
-    @unittest.skipUnless(LINUX and RLIMIT_SUPPORT, "LINUX >= 2.6.36 only")
+    @unittest.skipIf(not HAS_RLIMIT, "not supported")
     def test_rlimit_infinity(self):
         # First set a limit, then re-set it by specifying INFINITY
         # and assume we overridden the previous limit.
@@ -498,7 +487,7 @@ class TestProcess(unittest.TestCase):
             p.rlimit(psutil.RLIMIT_FSIZE, (soft, hard))
             self.assertEqual(p.rlimit(psutil.RLIMIT_FSIZE), (soft, hard))
 
-    @unittest.skipUnless(LINUX and RLIMIT_SUPPORT, "LINUX >= 2.6.36 only")
+    @unittest.skipIf(not HAS_RLIMIT, "not supported")
     def test_rlimit_infinity_value(self):
         # RLIMIT_FSIZE should be RLIM_INFINITY, which will be a really
         # big number on a platform with large file support.  On these
@@ -531,7 +520,7 @@ class TestProcess(unittest.TestCase):
         finally:
             thread.stop()
 
-    @unittest.skipUnless(WINDOWS, 'WINDOWS only')
+    @unittest.skipIf(not WINDOWS, 'WINDOWS only')
     def test_num_handles(self):
         # a better test is done later into test/_windows.py
         p = psutil.Process()
@@ -619,12 +608,12 @@ class TestProcess(unittest.TestCase):
             self.assertGreaterEqual(value, 0, msg=(name, value))
             self.assertLessEqual(value, total, msg=(name, value, total))
         if LINUX or WINDOWS or OSX:
-            mem.uss
+            self.assertGreaterEqual(mem.uss, 0)
         if LINUX:
-            mem.pss
-            self.assertGreater(mem.pss, mem.uss)
+            self.assertGreaterEqual(mem.pss, 0)
+            self.assertGreaterEqual(mem.swap, 0)
 
-    @unittest.skipIf(OPENBSD or NETBSD, "platfform not supported")
+    @unittest.skipIf(not HAS_MEMORY_MAPS, "not supported")
     def test_memory_maps(self):
         p = psutil.Process()
         maps = p.memory_maps()
@@ -664,6 +653,16 @@ class TestProcess(unittest.TestCase):
                 else:
                     self.assertIsInstance(value, (int, long))
                     assert value >= 0, value
+
+    @unittest.skipIf(not HAS_MEMORY_MAPS, "not supported")
+    def test_memory_maps_lists_lib(self):
+        p = psutil.Process()
+        ext = ".so" if POSIX else ".dll"
+        old = [x.path for x in p.memory_maps()
+               if os.path.normcase(x.path).endswith(ext)][0]
+        new = os.path.normcase(copyload_shared_lib(old))
+        newpaths = [os.path.normcase(x.path) for x in p.memory_maps()]
+        self.assertIn(new, newpaths)
 
     def test_memory_percent(self):
         p = psutil.Process()
@@ -761,7 +760,7 @@ class TestProcess(unittest.TestCase):
         self.assertEqual(os.path.normcase(p.exe()),
                          os.path.normcase(funky_path))
 
-    @unittest.skipUnless(POSIX, 'POSIX only')
+    @unittest.skipIf(not POSIX, 'POSIX only')
     def test_uids(self):
         p = psutil.Process()
         real, effective, saved = p.uids()
@@ -775,7 +774,7 @@ class TestProcess(unittest.TestCase):
         if hasattr(os, "getresuid"):
             self.assertEqual(os.getresuid(), p.uids())
 
-    @unittest.skipUnless(POSIX, 'POSIX only')
+    @unittest.skipIf(not POSIX, 'POSIX only')
     def test_gids(self):
         p = psutil.Process()
         real, effective, saved = p.gids()
@@ -865,7 +864,7 @@ class TestProcess(unittest.TestCase):
         p = psutil.Process(sproc.pid)
         call_until(p.cwd, "ret == os.path.dirname(os.getcwd())")
 
-    @unittest.skipUnless(WINDOWS or LINUX or FREEBSD, 'platform not supported')
+    @unittest.skipIf(not HAS_CPU_AFFINITY, 'not supported')
     def test_cpu_affinity(self):
         p = psutil.Process()
         initial = p.cpu_affinity()
@@ -908,7 +907,7 @@ class TestProcess(unittest.TestCase):
         p.cpu_affinity(set(all_cpus))
         p.cpu_affinity(tuple(all_cpus))
 
-    @unittest.skipUnless(WINDOWS or LINUX or FREEBSD, 'platform not supported')
+    @unittest.skipIf(not HAS_CPU_AFFINITY, 'not supported')
     def test_cpu_affinity_errs(self):
         sproc = get_test_subprocess()
         p = psutil.Process(sproc.pid)
@@ -980,9 +979,9 @@ class TestProcess(unittest.TestCase):
             self.assertEqual(ntuple[0], ntuple.path)
             self.assertEqual(ntuple[1], ntuple.fd)
             # test file is gone
-            self.assertTrue(fileobj.name not in p.open_files())
+            self.assertNotIn(fileobj.name, p.open_files())
 
-    @unittest.skipUnless(POSIX, 'POSIX only')
+    @unittest.skipIf(not POSIX, 'POSIX only')
     def test_num_fds(self):
         p = psutil.Process()
         start = p.num_fds()
@@ -1198,7 +1197,7 @@ class TestProcess(unittest.TestCase):
 
         excluded_names = ['pid', 'is_running', 'wait', 'create_time',
                           'oneshot', 'memory_info_ex']
-        if LINUX and not RLIMIT_SUPPORT:
+        if LINUX and not HAS_RLIMIT:
             excluded_names.append('rlimit')
         for name in dir(p):
             if (name.startswith('_') or
@@ -1242,7 +1241,7 @@ class TestProcess(unittest.TestCase):
                     "NoSuchProcess exception not raised for %r, retval=%s" % (
                         name, ret))
 
-    @unittest.skipUnless(POSIX, 'POSIX only')
+    @unittest.skipIf(not POSIX, 'POSIX only')
     def test_zombie_process(self):
         def succeed_or_zombie_p_exc(fun, *args, **kwargs):
             try:
@@ -1337,7 +1336,7 @@ class TestProcess(unittest.TestCase):
             finally:
                 reap_children(recursive=True)
 
-    @unittest.skipUnless(POSIX, 'POSIX only')
+    @unittest.skipIf(not POSIX, 'POSIX only')
     def test_zombie_process_is_running_w_exc(self):
         # Emulate a case where internally is_running() raises
         # ZombieProcess.
@@ -1347,7 +1346,7 @@ class TestProcess(unittest.TestCase):
             assert p.is_running()
             assert m.called
 
-    @unittest.skipUnless(POSIX, 'POSIX only')
+    @unittest.skipIf(not POSIX, 'POSIX only')
     def test_zombie_process_status_w_exc(self):
         # Emulate a case where internally status() raises
         # ZombieProcess.
@@ -1423,8 +1422,7 @@ class TestProcess(unittest.TestCase):
         assert proc.stderr.closed
         assert proc.stdin.closed
 
-    @unittest.skipUnless(hasattr(psutil.Process, "environ"),
-                         "platform not supported")
+    @unittest.skipIf(not HAS_ENVIRON, "not supported")
     def test_environ(self):
         self.maxDiff = None
         p = psutil.Process()
@@ -1447,9 +1445,8 @@ class TestProcess(unittest.TestCase):
 
         self.assertEqual(d, d2)
 
-    @unittest.skipUnless(hasattr(psutil.Process, "environ"),
-                         "platform not supported")
-    @unittest.skipUnless(POSIX, "posix only")
+    @unittest.skipIf(not HAS_ENVIRON, "not supported")
+    @unittest.skipIf(not POSIX, "POSIX only")
     def test_weird_environ(self):
         # environment variables can contain values without an equals sign
         code = textwrap.dedent("""
@@ -1479,313 +1476,6 @@ class TestProcess(unittest.TestCase):
         self.assertEqual(p.environ(), {"A": "1", "C": "3"})
         sproc.communicate()
         self.assertEqual(sproc.returncode, 0)
-
-
-# ===================================================================
-# --- Featch all processes test
-# ===================================================================
-
-
-class TestFetchAllProcesses(unittest.TestCase):
-    """Test which iterates over all running processes and performs
-    some sanity checks against Process API's returned values.
-    """
-
-    def setUp(self):
-        if POSIX:
-            import pwd
-            import grp
-            users = pwd.getpwall()
-            groups = grp.getgrall()
-            self.all_uids = set([x.pw_uid for x in users])
-            self.all_usernames = set([x.pw_name for x in users])
-            self.all_gids = set([x.gr_gid for x in groups])
-
-    def test_fetch_all(self):
-        valid_procs = 0
-        excluded_names = set([
-            'send_signal', 'suspend', 'resume', 'terminate', 'kill', 'wait',
-            'as_dict', 'cpu_percent', 'parent', 'children', 'pid',
-            'memory_info_ex', 'oneshot',
-        ])
-        if LINUX and not RLIMIT_SUPPORT:
-            excluded_names.add('rlimit')
-        attrs = []
-        for name in dir(psutil.Process):
-            if name.startswith("_"):
-                continue
-            if name in excluded_names:
-                continue
-            attrs.append(name)
-
-        default = object()
-        failures = []
-        for p in psutil.process_iter():
-            with p.oneshot():
-                for name in attrs:
-                    ret = default
-                    try:
-                        args = ()
-                        attr = getattr(p, name, None)
-                        if attr is not None and callable(attr):
-                            if name == 'rlimit':
-                                args = (psutil.RLIMIT_NOFILE,)
-                            ret = attr(*args)
-                        else:
-                            ret = attr
-                        valid_procs += 1
-                    except NotImplementedError:
-                        msg = "%r was skipped because not implemented" % (
-                            self.__class__.__name__ + '.test_' + name)
-                        warn(msg)
-                    except (psutil.NoSuchProcess, psutil.AccessDenied) as err:
-                        self.assertEqual(err.pid, p.pid)
-                        if err.name:
-                            # make sure exception's name attr is set
-                            # with the actual process name
-                            self.assertEqual(err.name, p.name())
-                        self.assertTrue(str(err))
-                        self.assertTrue(err.msg)
-                    except Exception as err:
-                        s = '\n' + '=' * 70 + '\n'
-                        s += "FAIL: test_%s (proc=%s" % (name, p)
-                        if ret != default:
-                            s += ", ret=%s)" % repr(ret)
-                        s += ')\n'
-                        s += '-' * 70
-                        s += "\n%s" % traceback.format_exc()
-                        s = "\n".join((" " * 4) + i for i in s.splitlines())
-                        s += '\n'
-                        failures.append(s)
-                        break
-                    else:
-                        if ret not in (0, 0.0, [], None, '', {}):
-                            assert ret, ret
-                        meth = getattr(self, name)
-                        meth(ret, p)
-
-        if failures:
-            self.fail(''.join(failures))
-
-        # we should always have a non-empty list, not including PID 0 etc.
-        # special cases.
-        self.assertTrue(valid_procs > 0)
-
-    def cmdline(self, ret, proc):
-        pass
-
-    def exe(self, ret, proc):
-        if not ret:
-            self.assertEqual(ret, '')
-        else:
-            assert os.path.isabs(ret), ret
-            # Note: os.stat() may return False even if the file is there
-            # hence we skip the test, see:
-            # http://stackoverflow.com/questions/3112546/os-path-exists-lies
-            if POSIX and os.path.isfile(ret):
-                if hasattr(os, 'access') and hasattr(os, "X_OK"):
-                    # XXX may fail on OSX
-                    self.assertTrue(os.access(ret, os.X_OK))
-
-    def ppid(self, ret, proc):
-        self.assertTrue(ret >= 0)
-
-    def name(self, ret, proc):
-        self.assertIsInstance(ret, (str, unicode))
-        self.assertTrue(ret)
-
-    def create_time(self, ret, proc):
-        try:
-            self.assertGreaterEqual(ret, 0)
-        except AssertionError:
-            if OPENBSD and proc.status == psutil.STATUS_ZOMBIE:
-                pass
-            else:
-                raise
-        # this can't be taken for granted on all platforms
-        # self.assertGreaterEqual(ret, psutil.boot_time())
-        # make sure returned value can be pretty printed
-        # with strftime
-        time.strftime("%Y %m %d %H:%M:%S", time.localtime(ret))
-
-    def uids(self, ret, proc):
-        for uid in ret:
-            self.assertGreaterEqual(uid, 0)
-            self.assertIn(uid, self.all_uids)
-
-    def gids(self, ret, proc):
-        # note: testing all gids as above seems not to be reliable for
-        # gid == 30 (nodoby); not sure why.
-        for gid in ret:
-            if not OSX and not NETBSD:
-                self.assertGreaterEqual(gid, 0)
-                self.assertIn(gid, self.all_gids)
-
-    def username(self, ret, proc):
-        self.assertTrue(ret)
-        if POSIX:
-            self.assertIn(ret, self.all_usernames)
-
-    def status(self, ret, proc):
-        self.assertTrue(ret != "")
-        self.assertTrue(ret != '?')
-        self.assertIn(ret, VALID_PROC_STATUSES)
-
-    def io_counters(self, ret, proc):
-        for field in ret:
-            if field != -1:
-                self.assertTrue(field >= 0)
-
-    def ionice(self, ret, proc):
-        if LINUX:
-            self.assertTrue(ret.ioclass >= 0)
-            self.assertTrue(ret.value >= 0)
-        else:
-            self.assertTrue(ret >= 0)
-            self.assertIn(ret, (0, 1, 2))
-
-    def num_threads(self, ret, proc):
-        self.assertTrue(ret >= 1)
-
-    def threads(self, ret, proc):
-        for t in ret:
-            self.assertTrue(t.id >= 0)
-            self.assertTrue(t.user_time >= 0)
-            self.assertTrue(t.system_time >= 0)
-
-    def cpu_times(self, ret, proc):
-        self.assertTrue(ret.user >= 0)
-        self.assertTrue(ret.system >= 0)
-
-    def cpu_num(self, ret, proc):
-        self.assertGreaterEqual(ret, 0)
-        if psutil.cpu_count() == 1:
-            self.assertEqual(ret, 0)
-        self.assertIn(ret, range(psutil.cpu_count()))
-
-    def memory_info(self, ret, proc):
-        for name in ret._fields:
-            self.assertGreaterEqual(getattr(ret, name), 0)
-        if POSIX and ret.vms != 0:
-            # VMS is always supposed to be the highest
-            for name in ret._fields:
-                if name != 'vms':
-                    value = getattr(ret, name)
-                    assert ret.vms > value, ret
-        elif WINDOWS:
-            assert ret.peak_wset >= ret.wset, ret
-            assert ret.peak_paged_pool >= ret.paged_pool, ret
-            assert ret.peak_nonpaged_pool >= ret.nonpaged_pool, ret
-            assert ret.peak_pagefile >= ret.pagefile, ret
-
-    def memory_full_info(self, ret, proc):
-        total = psutil.virtual_memory().total
-        for name in ret._fields:
-            value = getattr(ret, name)
-            self.assertGreaterEqual(value, 0, msg=(name, value))
-            self.assertLessEqual(value, total, msg=(name, value, total))
-
-        if LINUX:
-            self.assertGreaterEqual(ret.pss, ret.uss)
-
-    def open_files(self, ret, proc):
-        for f in ret:
-            if WINDOWS:
-                assert f.fd == -1, f
-            else:
-                self.assertIsInstance(f.fd, int)
-            if LINUX:
-                self.assertIsInstance(f.position, int)
-                self.assertGreaterEqual(f.position, 0)
-                self.assertIn(f.mode, ('r', 'w', 'a', 'r+', 'a+'))
-                self.assertGreater(f.flags, 0)
-            if BSD and not f.path:
-                # XXX see: https://github.com/giampaolo/psutil/issues/595
-                continue
-            assert os.path.isabs(f.path), f
-            assert os.path.isfile(f.path), f
-
-    def num_fds(self, ret, proc):
-        self.assertTrue(ret >= 0)
-
-    def connections(self, ret, proc):
-        self.assertEqual(len(ret), len(set(ret)))
-        for conn in ret:
-            check_connection_ntuple(conn)
-
-    def cwd(self, ret, proc):
-        if ret is not None:  # BSD may return None
-            assert os.path.isabs(ret), ret
-            try:
-                st = os.stat(ret)
-            except OSError as err:
-                if WINDOWS and err.errno in \
-                        psutil._psplatform.ACCESS_DENIED_SET:
-                    pass
-                # directory has been removed in mean time
-                elif err.errno != errno.ENOENT:
-                    raise
-            else:
-                self.assertTrue(stat.S_ISDIR(st.st_mode))
-
-    def memory_percent(self, ret, proc):
-        assert 0 <= ret <= 100, ret
-
-    def is_running(self, ret, proc):
-        self.assertTrue(ret)
-
-    def cpu_affinity(self, ret, proc):
-        assert ret != [], ret
-        cpus = range(psutil.cpu_count())
-        for n in ret:
-            self.assertIn(n, cpus)
-
-    def terminal(self, ret, proc):
-        if ret is not None:
-            assert os.path.isabs(ret), ret
-            assert os.path.exists(ret), ret
-
-    def memory_maps(self, ret, proc):
-        for nt in ret:
-            for fname in nt._fields:
-                value = getattr(nt, fname)
-                if fname == 'path':
-                    if not value.startswith('['):
-                        assert os.path.isabs(nt.path), nt.path
-                        # commented as on Linux we might get
-                        # '/foo/bar (deleted)'
-                        # assert os.path.exists(nt.path), nt.path
-                elif fname in ('addr', 'perms'):
-                    self.assertTrue(value)
-                else:
-                    self.assertIsInstance(value, (int, long))
-                    assert value >= 0, value
-
-    def num_handles(self, ret, proc):
-        if WINDOWS:
-            self.assertGreaterEqual(ret, 0)
-        else:
-            self.assertGreaterEqual(ret, 0)
-
-    def nice(self, ret, proc):
-        if POSIX:
-            assert -20 <= ret <= 20, ret
-        else:
-            priorities = [getattr(psutil, x) for x in dir(psutil)
-                          if x.endswith('_PRIORITY_CLASS')]
-            self.assertIn(ret, priorities)
-
-    def num_ctx_switches(self, ret, proc):
-        self.assertGreaterEqual(ret.voluntary, 0)
-        self.assertGreaterEqual(ret.involuntary, 0)
-
-    def rlimit(self, ret, proc):
-        self.assertEqual(len(ret), 2)
-        self.assertGreaterEqual(ret[0], -1)
-        self.assertGreaterEqual(ret[1], -1)
-
-    def environ(self, ret, proc):
-        self.assertIsInstance(ret, dict)
 
 
 # ===================================================================

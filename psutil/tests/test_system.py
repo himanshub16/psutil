@@ -29,13 +29,17 @@ from psutil import POSIX
 from psutil import SUNOS
 from psutil import WINDOWS
 from psutil._compat import long
-from psutil._compat import unicode
 from psutil.tests import APPVEYOR
 from psutil.tests import ASCII_FS
 from psutil.tests import check_net_address
 from psutil.tests import DEVNULL
 from psutil.tests import enum
 from psutil.tests import get_test_subprocess
+from psutil.tests import HAS_BATTERY
+from psutil.tests import HAS_CPU_FREQ
+from psutil.tests import HAS_SENSORS_BATTERY
+from psutil.tests import HAS_SENSORS_FANS
+from psutil.tests import HAS_SENSORS_TEMPERATURES
 from psutil.tests import mock
 from psutil.tests import reap_children
 from psutil.tests import retry_before_failing
@@ -168,7 +172,7 @@ class TestSystemAPIs(unittest.TestCase):
         self.assertGreater(bt, 0)
         self.assertLess(bt, time.time())
 
-    @unittest.skipUnless(POSIX, 'POSIX only')
+    @unittest.skipIf(not POSIX, 'POSIX only')
     def test_PAGESIZE(self):
         # pagesize is used internally to perform different calculations
         # and it's determined by using SC_PAGE_SIZE; make sure
@@ -196,6 +200,9 @@ class TestSystemAPIs(unittest.TestCase):
 
     def test_swap_memory(self):
         mem = psutil.swap_memory()
+        self.assertEqual(
+            mem._fields, ('total', 'used', 'free', 'percent', 'sin', 'sout'))
+
         assert mem.total >= 0, mem
         assert mem.used >= 0, mem
         if mem.total > 0:
@@ -422,6 +429,8 @@ class TestSystemAPIs(unittest.TestCase):
 
     def test_disk_usage(self):
         usage = psutil.disk_usage(os.getcwd())
+        self.assertEqual(usage._fields, ('total', 'used', 'free', 'percent'))
+
         assert usage.total > 0, usage
         assert usage.used > 0, usage
         assert usage.free > 0, usage
@@ -468,10 +477,10 @@ class TestSystemAPIs(unittest.TestCase):
         # AssertionError: Lists differ: [0, 1, 2, 3, 4, 5, 6, 7,... != [0]
         self.assertTrue(ls, msg=ls)
         for disk in ls:
-            self.assertIsInstance(disk.device, (str, unicode))
-            self.assertIsInstance(disk.mountpoint, (str, unicode))
-            self.assertIsInstance(disk.fstype, (str, unicode))
-            self.assertIsInstance(disk.opts, (str, unicode))
+            self.assertIsInstance(disk.device, str)
+            self.assertIsInstance(disk.mountpoint, str)
+            self.assertIsInstance(disk.fstype, str)
+            self.assertIsInstance(disk.opts, str)
             if WINDOWS and 'cdrom' in disk.opts:
                 continue
             if not POSIX:
@@ -547,7 +556,7 @@ class TestSystemAPIs(unittest.TestCase):
         self.assertNotEqual(ret, [])
         for key in ret:
             self.assertTrue(key)
-            self.assertIsInstance(key, (str, unicode))
+            self.assertIsInstance(key, str)
             check_ntuple(ret[key])
 
     def test_net_if_addrs(self):
@@ -563,7 +572,7 @@ class TestSystemAPIs(unittest.TestCase):
 
         families = set([socket.AF_INET, socket.AF_INET6, psutil.AF_LINK])
         for nic, addrs in nics.items():
-            self.assertIsInstance(nic, (str, unicode))
+            self.assertIsInstance(nic, str)
             self.assertEqual(len(set(addrs)), len(addrs))
             for addr in addrs:
                 self.assertIsInstance(addr.family, int)
@@ -634,7 +643,8 @@ class TestSystemAPIs(unittest.TestCase):
         all_duplexes = (psutil.NIC_DUPLEX_FULL,
                         psutil.NIC_DUPLEX_HALF,
                         psutil.NIC_DUPLEX_UNKNOWN)
-        for nic, stats in nics.items():
+        for name, stats in nics.items():
+            self.assertIsInstance(name, str)
             isup, duplex, speed, mtu = stats
             self.assertIsInstance(isup, bool)
             self.assertIn(duplex, all_duplexes)
@@ -686,10 +696,10 @@ class TestSystemAPIs(unittest.TestCase):
         self.assertNotEqual(users, [])
         for user in users:
             assert user.name, user
-            self.assertIsInstance(user.name, (str, unicode))
-            self.assertIsInstance(user.terminal, (str, unicode, type(None)))
+            self.assertIsInstance(user.name, str)
+            self.assertIsInstance(user.terminal, (str, type(None)))
             if user.host is not None:
-                self.assertIsInstance(user.host, (str, unicode, type(None)))
+                self.assertIsInstance(user.host, (str, type(None)))
             user.terminal
             user.host
             assert user.started > 0.0, user
@@ -702,17 +712,20 @@ class TestSystemAPIs(unittest.TestCase):
     def test_cpu_stats(self):
         # Tested more extensively in per-platform test modules.
         infos = psutil.cpu_stats()
+        self.assertEqual(
+            infos._fields,
+            ('ctx_switches', 'interrupts', 'soft_interrupts', 'syscalls'))
         for name in infos._fields:
             value = getattr(infos, name)
             self.assertGreaterEqual(value, 0)
             if name in ('ctx_switches', 'interrupts'):
                 self.assertGreater(value, 0)
 
-    @unittest.skipUnless(hasattr(psutil, "cpu_freq"),
-                         "platform not suported")
+    @unittest.skipIf(not HAS_CPU_FREQ, "not suported")
     def test_cpu_freq(self):
         def check_ls(ls):
             for nt in ls:
+                self.assertEqual(nt._fields, ('current', 'min', 'max'))
                 self.assertLessEqual(nt.current, nt.max)
                 for name in nt._fields:
                     value = getattr(nt, name)
@@ -766,14 +779,13 @@ class TestSystemAPIs(unittest.TestCase):
         for name in names:
             self.assertIs(getattr(psutil, name), False, msg=name)
 
-    @unittest.skipUnless(hasattr(psutil, "sensors_temperatures"),
-                         "platform not supported")
+    @unittest.skipIf(not HAS_SENSORS_TEMPERATURES, "not supported")
     def test_sensors_temperatures(self):
         temps = psutil.sensors_temperatures()
         for name, entries in temps.items():
-            self.assertIsInstance(name, (str, unicode))
+            self.assertIsInstance(name, str)
             for entry in entries:
-                self.assertIsInstance(entry.label, (str, unicode))
+                self.assertIsInstance(entry.label, str)
                 if entry.current is not None:
                     self.assertGreaterEqual(entry.current, 0)
                 if entry.high is not None:
@@ -781,8 +793,7 @@ class TestSystemAPIs(unittest.TestCase):
                 if entry.critical is not None:
                     self.assertGreaterEqual(entry.critical, 0)
 
-    @unittest.skipUnless(hasattr(psutil, "sensors_temperatures"),
-                         "platform not supported")
+    @unittest.skipIf(not HAS_SENSORS_TEMPERATURES, "not supported")
     def test_sensors_temperatures_fahreneit(self):
         d = {'coretemp': [('label', 50.0, 60.0, 70.0)]}
         with mock.patch("psutil._psplatform.sensors_temperatures",
@@ -794,12 +805,10 @@ class TestSystemAPIs(unittest.TestCase):
             self.assertEqual(temps.high, 140.0)
             self.assertEqual(temps.critical, 158.0)
 
-    @unittest.skipUnless(hasattr(psutil, "sensors_battery"),
-                         "platform not supported")
+    @unittest.skipIf(not HAS_SENSORS_BATTERY, "not supported")
+    @unittest.skipIf(not HAS_BATTERY, "no battery")
     def test_sensors_battery(self):
         ret = psutil.sensors_battery()
-        if ret is None:
-            return  # no battery
         self.assertGreaterEqual(ret.percent, 0)
         self.assertLessEqual(ret.percent, 100)
         if ret.secsleft not in (psutil.POWER_TIME_UNKNOWN,
@@ -810,14 +819,13 @@ class TestSystemAPIs(unittest.TestCase):
                 self.assertTrue(ret.power_plugged)
         self.assertIsInstance(ret.power_plugged, bool)
 
-    @unittest.skipUnless(hasattr(psutil, "sensors_fans"),
-                         "platform not supported")
+    @unittest.skipIf(not HAS_SENSORS_FANS, "not supported")
     def test_sensors_fans(self):
         fans = psutil.sensors_fans()
         for name, entries in fans.items():
-            self.assertIsInstance(name, (str, unicode))
+            self.assertIsInstance(name, str)
             for entry in entries:
-                self.assertIsInstance(entry.label, (str, unicode))
+                self.assertIsInstance(entry.label, str)
                 self.assertIsInstance(entry.current, (int, long))
                 self.assertGreaterEqual(entry.current, 0)
 

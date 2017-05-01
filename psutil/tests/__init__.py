@@ -9,8 +9,10 @@ Test utilities.
 """
 
 from __future__ import print_function
+
 import atexit
 import contextlib
+import ctypes
 import errno
 import functools
 import os
@@ -37,9 +39,9 @@ except ImportError:
     from urllib2 import urlopen
 
 import psutil
-from psutil import LINUX
 from psutil import POSIX
 from psutil import WINDOWS
+from psutil._common import supports_ipv6
 from psutil._compat import PY3
 from psutil._compat import u
 from psutil._compat import unicode
@@ -72,9 +74,13 @@ else:
 __all__ = [
     # constants
     'APPVEYOR', 'DEVNULL', 'GLOBAL_TIMEOUT', 'MEMORY_TOLERANCE', 'NO_RETRIES',
-    'PYPY', 'PYTHON', 'RLIMIT_SUPPORT', 'ROOT_DIR', 'SCRIPTS_DIR',
-    'TESTFILE_PREFIX', 'TESTFN', 'TESTFN_UNICODE', 'TOX', 'TRAVIS',
-    'VALID_PROC_STATUSES', 'VERBOSITY',
+    'PYPY', 'PYTHON', 'ROOT_DIR', 'SCRIPTS_DIR', 'TESTFILE_PREFIX',
+    'TESTFN', 'TESTFN_UNICODE', 'TOX', 'TRAVIS', 'VALID_PROC_STATUSES',
+    'VERBOSITY',
+    "HAS_CPU_AFFINITY", "HAS_CPU_FREQ", "HAS_ENVIRON", "HAS_PROC_IO_COUNTERS",
+    "HAS_IONICE", "HAS_MEMORY_MAPS", "HAS_PROC_CPU_NUM", "HAS_RLIMIT",
+    "HAS_SENSORS_BATTERY", "HAS_BATTERY""HAS_SENSORS_FANS",
+    "HAS_SENSORS_TEMPERATURES",
     # classes
     'ThreadTask'
     # test utils
@@ -93,8 +99,10 @@ __all__ = [
     'call_until', 'wait_for_pid', 'wait_for_file',
     # network
     'check_connection_ntuple', 'check_net_address',
+    'get_free_port', 'unix_socket_path', 'bind_socket', 'bind_unix_socket',
+    'tcp_socketpair', 'unix_socketpair', 'create_sockets',
     # others
-    'warn',
+    'warn', 'copyload_shared_lib', 'is_namedtuple',
 ]
 
 
@@ -142,6 +150,21 @@ ASCII_FS = sys.getfilesystemencoding().lower() in ('ascii', 'us-ascii')
 HERE = os.path.abspath(os.path.dirname(__file__))
 ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 SCRIPTS_DIR = os.path.join(ROOT_DIR, 'scripts')
+
+# --- support
+
+HAS_CPU_AFFINITY = hasattr(psutil.Process, "cpu_affinity")
+HAS_CPU_FREQ = hasattr(psutil, "cpu_freq")
+HAS_ENVIRON = hasattr(psutil.Process, "environ")
+HAS_PROC_IO_COUNTERS = hasattr(psutil.Process, "io_counters")
+HAS_IONICE = hasattr(psutil.Process, "ionice")
+HAS_MEMORY_MAPS = hasattr(psutil.Process, "memory_maps")
+HAS_PROC_CPU_NUM = hasattr(psutil.Process, "cpu_num")
+HAS_RLIMIT = hasattr(psutil.Process, "rlimit")
+HAS_SENSORS_BATTERY = hasattr(psutil, "sensors_battery")
+HAS_BATTERY = HAS_SENSORS_BATTERY and psutil.sensors_battery()
+HAS_SENSORS_FANS = hasattr(psutil, "sensors_fans")
+HAS_SENSORS_TEMPERATURES = hasattr(psutil, "sensors_temperatures")
 
 # --- misc
 
@@ -229,11 +252,12 @@ def get_test_subprocess(cmd=None, **kwds):
         pyline += "sleep(60);"
         cmd = [PYTHON, "-c", pyline]
         sproc = subprocess.Popen(cmd, **kwds)
+        _subprocesses_started.add(sproc)
         wait_for_file(_TESTFN, delete=True, empty=True)
     else:
         sproc = subprocess.Popen(cmd, **kwds)
+        _subprocesses_started.add(sproc)
         wait_for_pid(sproc.pid)
-    _subprocesses_started.add(sproc)
     return sproc
 
 
@@ -398,12 +422,6 @@ else:
         if len(nums) >= 3:
             micro = int(nums[2])
         return (major, minor, micro)
-
-
-if LINUX:
-    RLIMIT_SUPPORT = get_kernel_version() >= (2, 6, 36)
-else:
-    RLIMIT_SUPPORT = False
 
 
 if not WINDOWS:
@@ -791,14 +809,20 @@ def unix_socket_path(suffix=""):
             pass
 
 
-def bind_socket(addr, family, type):
+def bind_socket(family=AF_INET, type=SOCK_STREAM, addr=None):
     """Binds a generic socket."""
+    if addr is None and family in (AF_INET, AF_INET6):
+        addr = ("", 0)
     sock = socket.socket(family, type)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    sock.bind(addr)
-    if type == socket.SOCK_STREAM:
-        sock.listen(10)
-    return sock
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind(addr)
+        if type == socket.SOCK_STREAM:
+            sock.listen(10)
+        return sock
+    except Exception:
+        sock.close()
+        raise
 
 
 def bind_unix_socket(name, type=socket.SOCK_STREAM):
@@ -808,23 +832,23 @@ def bind_unix_socket(name, type=socket.SOCK_STREAM):
     sock = socket.socket(socket.AF_UNIX, type)
     try:
         sock.bind(name)
+        if type == socket.SOCK_STREAM:
+            sock.listen(10)
     except Exception:
         sock.close()
         raise
-    if type == socket.SOCK_STREAM:
-        sock.listen(10)
     return sock
 
 
-def inet_socketpair(family, type, addr=("", 0)):
-    """Build a pair of INET sockets connected to each other.
+def tcp_socketpair(family, addr=("", 0)):
+    """Build a pair of TCP sockets connected to each other.
     Return a (server, client) tuple.
     """
-    with contextlib.closing(socket.socket(family, type)) as ll:
+    with contextlib.closing(socket.socket(family, SOCK_STREAM)) as ll:
         ll.bind(addr)
         ll.listen(10)
         addr = ll.getsockname()
-        c = socket.socket(family, type)
+        c = socket.socket(family, SOCK_STREAM)
         try:
             c.connect(addr)
             caddr = c.getsockname()
@@ -844,14 +868,52 @@ def unix_socketpair(name):
     the same UNIX file name.
     Return a (server, client) tuple.
     """
-    assert psutil.POSIX, "not a POSIX system"
-    server = bind_unix_socket(name, type=socket.SOCK_STREAM)
-    server.setblocking(0)
-    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    client.setblocking(0)
-    client.connect(name)
-    # new = server.accept()
+    assert psutil.POSIX
+    server = client = None
+    try:
+        server = bind_unix_socket(name, type=socket.SOCK_STREAM)
+        server.setblocking(0)
+        client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        client.setblocking(0)
+        client.connect(name)
+        # new = server.accept()
+    except Exception:
+        if server is not None:
+            server.close()
+        if client is not None:
+            client.close()
+        raise
     return (server, client)
+
+
+@contextlib.contextmanager
+def create_sockets():
+    """Open as many socket families / types as possible."""
+    socks = []
+    fname1 = fname2 = None
+    try:
+        socks.append(bind_socket(socket.AF_INET, socket.SOCK_STREAM))
+        socks.append(bind_socket(socket.AF_INET, socket.SOCK_DGRAM))
+        if supports_ipv6():
+            socks.append(bind_socket(socket.AF_INET6, socket.SOCK_STREAM))
+            socks.append(bind_socket(socket.AF_INET6, socket.SOCK_DGRAM))
+        if POSIX:
+            fname1 = unix_socket_path().__enter__()
+            fname2 = unix_socket_path().__enter__()
+            s1, s2 = unix_socketpair(fname1)
+            s3 = bind_unix_socket(fname2, type=socket.SOCK_DGRAM)
+            # self.addCleanup(safe_rmpath, fname1)
+            # self.addCleanup(safe_rmpath, fname2)
+            for s in (s1, s2, s3):
+                socks.append(s)
+        yield socks
+    finally:
+        for s in socks:
+            s.close()
+        if fname1 is not None:
+            safe_rmpath(fname1)
+        if fname2 is not None:
+            safe_rmpath(fname2)
 
 
 def check_net_address(addr, family):
@@ -960,3 +1022,27 @@ def check_connection_ntuple(conn):
 def warn(msg):
     """Raise a warning msg."""
     warnings.warn(msg, UserWarning)
+
+
+def is_namedtuple(x):
+    """Check if object is an instance of namedtuple."""
+    t = type(x)
+    b = t.__bases__
+    if len(b) != 1 or b[0] != tuple:
+        return False
+    f = getattr(t, '_fields', None)
+    if not isinstance(f, tuple):
+        return False
+    return all(type(n) == str for n in f)
+
+
+def copyload_shared_lib(src, dst_prefix=TESTFILE_PREFIX):
+    """Given an existing shared so / DLL library copies it in
+    another location and loads it via ctypes.
+    Return the new path.
+    """
+    newpath = tempfile.mktemp(prefix=dst_prefix,
+                              suffix=os.path.splitext(src)[1])
+    shutil.copyfile(src, newpath)
+    ctypes.CDLL(newpath)
+    return newpath

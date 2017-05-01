@@ -9,29 +9,36 @@
 Notes about unicode handling in psutil
 ======================================
 
-In psutil these are the APIs returning or dealing with a string:
+In psutil these are the APIs returning or dealing with a string
+('not tested' means they are not tested to deal with non-ASCII strings):
 
 - Process.cmdline()
 - Process.connections('unix')
 - Process.cwd()
 - Process.environ()
 - Process.exe()
-- Process.memory_maps()        (not tested)
+- Process.memory_maps()
 - Process.name()
 - Process.open_files()
-- Process.username()           (not tested)
+- Process.username()             (not tested)
 
-- disk_io_counters()           (not tested)
-- disk_partitions()            (not tested)
+- disk_io_counters()             (not tested)
+- disk_partitions()              (not tested)
 - disk_usage(str)
 - net_connections('unix')
-- net_if_addrs()               (not tested)
-- net_if_stats()               (not tested)
-- net_io_counters()            (not tested)
-- sensors_fans()               (not tested)
-- sensors_temperatures()       (not tested)
-- users()                      (not tested)
-- WindowsService               (not tested)
+- net_if_addrs()                 (not tested)
+- net_if_stats()                 (not tested)
+- net_io_counters()              (not tested)
+- sensors_fans()                 (not tested)
+- sensors_temperatures()         (not tested)
+- users()                        (not tested)
+
+- WindowsService.binpath()       (not tested)
+- WindowsService.description()   (not tested)
+- WindowsService.display_name()  (not tested)
+- WindowsService.name()          (not tested)
+- WindowsService.status()        (not tested)
+- WindowsService.username()      (not tested)
 
 In here we create a unicode path with a funky non-ASCII name and (where
 possible) make psutil return it back (e.g. on name(), exe(),
@@ -49,21 +56,27 @@ circumstances.
 I'd rather have unicode support broken on Python 2 than having APIs
 returning variable str/unicode types, see:
 https://github.com/giampaolo/psutil/issues/655#issuecomment-136131180
+
+As such we also test that all APIs on Python 2 always return str and
+never unicode (in test_contracts.py).
 """
 
 import os
-import socket
 from contextlib import closing
 
 from psutil import BSD
 from psutil import OSX
+from psutil import POSIX
 from psutil import WINDOWS
 from psutil._compat import PY3
 from psutil.tests import ASCII_FS
 from psutil.tests import bind_unix_socket
 from psutil.tests import chdir
+from psutil.tests import copyload_shared_lib
 from psutil.tests import create_exe
 from psutil.tests import get_test_subprocess
+from psutil.tests import HAS_ENVIRON
+from psutil.tests import HAS_MEMORY_MAPS
 from psutil.tests import reap_children
 from psutil.tests import run_test_module_by_name
 from psutil.tests import safe_mkdir
@@ -77,6 +90,32 @@ from psutil.tests import unittest
 from psutil.tests import unix_socket_path
 import psutil
 import psutil.tests
+
+
+def can_deal_with_funky_name(name):
+    """Return True if both the fs and the subprocess module can
+    deal with a funky file name.
+    """
+    if PY3:
+        return True
+    try:
+        safe_rmpath(name)
+        create_exe(name)
+        get_test_subprocess(cmd=[name])
+    except UnicodeEncodeError:
+        return False
+    else:
+        reap_children()
+        return True
+
+
+if PY3:
+    INVALID_NAME = (TESTFN.encode('utf8') + b"f\xc0\x80").decode(
+        'utf8', 'surrogateescape')
+else:
+    INVALID_NAME = TESTFN + "f\xc0\x80"
+UNICODE_OK = can_deal_with_funky_name(TESTFN_UNICODE)
+INVALID_UNICODE_OK = can_deal_with_funky_name(INVALID_NAME)
 
 
 # ===================================================================
@@ -126,6 +165,8 @@ class _BaseFSAPIsTests(object):
         subp = get_test_subprocess(cmd=[self.funky_name])
         p = psutil.Process(subp.pid)
         cmdline = p.cmdline()
+        for part in cmdline:
+            self.assertIsInstance(part, str)
         if self.expect_exact_path_match():
             self.assertEqual(cmdline, [self.funky_name])
 
@@ -144,15 +185,15 @@ class _BaseFSAPIsTests(object):
         with open(self.funky_name, 'wb'):
             new = set(p.open_files())
         path = (new - start).pop().path
+        self.assertIsInstance(path, str)
         if BSD and not path:
             # XXX - see https://github.com/giampaolo/psutil/issues/595
             return self.skipTest("open_files on BSD is broken")
-        self.assertIsInstance(path, str)
         if self.expect_exact_path_match():
             self.assertEqual(os.path.normcase(path),
                              os.path.normcase(self.funky_name))
 
-    @unittest.skipUnless(hasattr(socket, "AF_UNIX"), "AF_UNIX not supported")
+    @unittest.skipIf(not POSIX, "POSIX only")
     def test_proc_connections(self):
         suffix = os.path.basename(self.funky_name)
         with unix_socket_path(suffix=suffix) as name:
@@ -165,9 +206,10 @@ class _BaseFSAPIsTests(object):
                     raise unittest.SkipTest("not supported")
             with closing(sock):
                 conn = psutil.Process().connections('unix')[0]
+                self.assertIsInstance(conn.laddr, str)
                 self.assertEqual(conn.laddr, name)
 
-    @unittest.skipUnless(hasattr(socket, "AF_UNIX"), "AF_UNIX not supported")
+    @unittest.skipIf(not POSIX, "POSIX only")
     @skip_on_access_denied()
     def test_net_connections(self):
         def find_sock(cons):
@@ -188,15 +230,34 @@ class _BaseFSAPIsTests(object):
             with closing(sock):
                 cons = psutil.net_connections(kind='unix')
                 conn = find_sock(cons)
+                self.assertIsInstance(conn.laddr, str)
                 self.assertEqual(conn.laddr, name)
 
     def test_disk_usage(self):
         safe_mkdir(self.funky_name)
         psutil.disk_usage(self.funky_name)
 
+    @unittest.skipIf(not HAS_MEMORY_MAPS, "not supported")
+    def test_memory_maps(self):
+        p = psutil.Process()
+        ext = ".so" if POSIX else ".dll"
+        old = [x.path for x in p.memory_maps()
+               if os.path.normcase(x.path).endswith(ext)][0]
+        try:
+            new = os.path.normcase(
+                copyload_shared_lib(old, dst_prefix=self.funky_name))
+        except UnicodeEncodeError:
+            if PY3:
+                raise
+            else:
+                raise unittest.SkipTest("ctypes can't handle unicode")
+        newpaths = [os.path.normcase(x.path) for x in p.memory_maps()]
+        self.assertIn(new, newpaths)
+
 
 @unittest.skipIf(OSX and TRAVIS, "unreliable on TRAVIS")  # TODO
 @unittest.skipIf(ASCII_FS, "ASCII fs")
+@unittest.skipIf(not UNICODE_OK, "subprocess can't deal with unicode")
 class TestFSAPIs(_BaseFSAPIsTests, unittest.TestCase):
     """Test FS APIs with a funky, valid, UTF8 path name."""
     funky_name = TESTFN_UNICODE
@@ -209,13 +270,11 @@ class TestFSAPIs(_BaseFSAPIsTests, unittest.TestCase):
 
 
 @unittest.skipIf(OSX and TRAVIS, "unreliable on TRAVIS")  # TODO
+@unittest.skipIf(not INVALID_UNICODE_OK,
+                 "subprocess can't deal with invalid unicode")
 class TestFSAPIsWithInvalidPath(_BaseFSAPIsTests, unittest.TestCase):
     """Test FS APIs with a funky, invalid path name."""
-    if PY3:
-        funky_name = (TESTFN.encode('utf8') + b"f\xc0\x80").decode(
-            'utf8', 'surrogateescape')
-    else:
-        funky_name = TESTFN + "f\xc0\x80"
+    funky_name = INVALID_NAME
 
     @classmethod
     def expect_exact_path_match(cls):
@@ -223,16 +282,27 @@ class TestFSAPIsWithInvalidPath(_BaseFSAPIsTests, unittest.TestCase):
         return True
 
 
+@unittest.skipIf(not WINDOWS, "WINDOWS only")
+class TestWinProcessName(unittest.TestCase):
+
+    def test_name_type(self):
+        # On Windows name() is determined from exe() first, because
+        # it's faster; we want to overcome the internal optimization
+        # and test name() instead of exe().
+        from psutil._pswindows import py2_strencode
+        name = py2_strencode(psutil._psplatform.cext.proc_name(os.getpid()))
+        self.assertIsInstance(name, str)
+
+
 # ===================================================================
-# FS APIs
+# Non fs APIs
 # ===================================================================
 
 
-class TestOtherAPIS(unittest.TestCase):
+class TestNonFSAPIS(unittest.TestCase):
     """Unicode tests for non fs-related APIs."""
 
-    @unittest.skipUnless(hasattr(psutil.Process, "environ"),
-                         "platform not supported")
+    @unittest.skipIf(not HAS_ENVIRON, "not supported")
     def test_proc_environ(self):
         # Note: differently from others, this test does not deal
         # with fs paths. On Python 2 subprocess module is broken as
@@ -240,12 +310,15 @@ class TestOtherAPIS(unittest.TestCase):
         # we use "è", which is part of the extended ASCII table
         # (unicode point <= 255).
         env = os.environ.copy()
-        funny_str = TESTFN_UNICODE if PY3 else 'è'
-        env['FUNNY_ARG'] = funny_str
+        funky_str = TESTFN_UNICODE if PY3 else 'è'
+        env['FUNNY_ARG'] = funky_str
         sproc = get_test_subprocess(env=env)
         p = psutil.Process(sproc.pid)
         env = p.environ()
-        self.assertEqual(env['FUNNY_ARG'], funny_str)
+        for k, v in env.items():
+            self.assertIsInstance(k, str)
+            self.assertIsInstance(v, str)
+        self.assertEqual(env['FUNNY_ARG'], funky_str)
 
 
 if __name__ == '__main__':

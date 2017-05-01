@@ -28,7 +28,8 @@ from psutil import LINUX
 from psutil._compat import PY3
 from psutil._compat import u
 from psutil.tests import call_until
-from psutil.tests import get_kernel_version
+from psutil.tests import HAS_BATTERY
+from psutil.tests import HAS_RLIMIT
 from psutil.tests import importlib
 from psutil.tests import MEMORY_TOLERANCE
 from psutil.tests import mock
@@ -146,7 +147,7 @@ def get_free_version_info():
 # =====================================================================
 
 
-@unittest.skipUnless(LINUX, "LINUX only")
+@unittest.skipIf(not LINUX, "LINUX only")
 class TestSystemVirtualMemory(unittest.TestCase):
 
     def test_total(self):
@@ -161,8 +162,8 @@ class TestSystemVirtualMemory(unittest.TestCase):
     # This got changed in:
     # https://gitlab.com/procps-ng/procps/commit/
     #     05d751c4f076a2f0118b914c5e51cfbb4762ad8e
-    @unittest.skipUnless(
-        LINUX and get_free_version_info() >= (3, 3, 12), "old free version")
+    @unittest.skipIf(LINUX and get_free_version_info() < (3, 3, 12),
+                     "old free version")
     @retry_before_failing()
     def test_used(self):
         free = free_physmem()
@@ -200,6 +201,8 @@ class TestSystemVirtualMemory(unittest.TestCase):
         self.assertAlmostEqual(
             vmstat_value, psutil_value, delta=MEMORY_TOLERANCE)
 
+    # https://travis-ci.org/giampaolo/psutil/jobs/227242952
+    @unittest.skipIf(TRAVIS, "unreliable on TRAVIS")
     @retry_before_failing()
     def test_inactive(self):
         vmstat_value = vmstat('inactive memory') * 1024
@@ -261,7 +264,7 @@ class TestSystemVirtualMemory(unittest.TestCase):
                 assert m.called
                 self.assertEqual(len(ws), 1)
                 w = ws[0]
-                self.assertTrue(w.filename.endswith('psutil/_pslinux.py'))
+                assert w.filename.endswith('psutil/_pslinux.py')
                 self.assertIn(
                     "memory stats couldn't be determined", str(w.message))
                 self.assertIn("cached", str(w.message))
@@ -389,7 +392,7 @@ class TestSystemVirtualMemory(unittest.TestCase):
 # =====================================================================
 
 
-@unittest.skipUnless(LINUX, "LINUX only")
+@unittest.skipIf(not LINUX, "LINUX only")
 class TestSystemSwapMemory(unittest.TestCase):
 
     @staticmethod
@@ -427,7 +430,7 @@ class TestSystemSwapMemory(unittest.TestCase):
                 assert m.called
                 self.assertEqual(len(ws), 1)
                 w = ws[0]
-                self.assertTrue(w.filename.endswith('psutil/_pslinux.py'))
+                assert w.filename.endswith('psutil/_pslinux.py')
                 self.assertIn(
                     "'sin' and 'sout' swap memory stats couldn't "
                     "be determined", str(w.message))
@@ -451,7 +454,7 @@ class TestSystemSwapMemory(unittest.TestCase):
                 assert m.called
                 self.assertEqual(len(ws), 1)
                 w = ws[0]
-                self.assertTrue(w.filename.endswith('psutil/_pslinux.py'))
+                assert w.filename.endswith('psutil/_pslinux.py')
                 self.assertIn(
                     "'sin' and 'sout' swap memory stats couldn't "
                     "be determined and were set to 0",
@@ -497,7 +500,7 @@ class TestSystemSwapMemory(unittest.TestCase):
 # =====================================================================
 
 
-@unittest.skipUnless(LINUX, "LINUX only")
+@unittest.skipIf(not LINUX, "LINUX only")
 class TestSystemCPU(unittest.TestCase):
 
     @unittest.skipIf(TRAVIS, "unknown failure on travis")
@@ -518,8 +521,8 @@ class TestSystemCPU(unittest.TestCase):
         else:
             self.assertNotIn('guest_nice', fields)
 
-    @unittest.skipUnless(os.path.exists("/sys/devices/system/cpu/online"),
-                         "/sys/devices/system/cpu/online does not exist")
+    @unittest.skipIf(not os.path.exists("/sys/devices/system/cpu/online"),
+                     "/sys/devices/system/cpu/online does not exist")
     def test_cpu_count_logical_w_sysdev_cpu_online(self):
         with open("/sys/devices/system/cpu/online") as f:
             value = f.read().strip()
@@ -527,19 +530,19 @@ class TestSystemCPU(unittest.TestCase):
             value = int(value.split('-')[1]) + 1
             self.assertEqual(psutil.cpu_count(), value)
 
-    @unittest.skipUnless(os.path.exists("/sys/devices/system/cpu"),
-                         "/sys/devices/system/cpu does not exist")
+    @unittest.skipIf(not os.path.exists("/sys/devices/system/cpu"),
+                     "/sys/devices/system/cpu does not exist")
     def test_cpu_count_logical_w_sysdev_cpu_num(self):
         ls = os.listdir("/sys/devices/system/cpu")
         count = len([x for x in ls if re.search("cpu\d+$", x) is not None])
         self.assertEqual(psutil.cpu_count(), count)
 
-    @unittest.skipUnless(which("nproc"), "nproc utility not available")
+    @unittest.skipIf(not which("nproc"), "nproc utility not available")
     def test_cpu_count_logical_w_nproc(self):
         num = int(sh("nproc --all"))
         self.assertEqual(psutil.cpu_count(logical=True), num)
 
-    @unittest.skipUnless(which("lscpu"), "lscpu utility not available")
+    @unittest.skipIf(not which("lscpu"), "lscpu utility not available")
     def test_cpu_count_logical_w_lscpu(self):
         out = sh("lscpu -p")
         num = len([x for x in out.split('\n') if not x.startswith('#')])
@@ -665,7 +668,7 @@ class TestSystemCPU(unittest.TestCase):
 # =====================================================================
 
 
-@unittest.skipUnless(LINUX, "LINUX only")
+@unittest.skipIf(not LINUX, "LINUX only")
 class TestSystemCPUStats(unittest.TestCase):
 
     @unittest.skipIf(TRAVIS, "fails on Travis")
@@ -686,7 +689,7 @@ class TestSystemCPUStats(unittest.TestCase):
 # =====================================================================
 
 
-@unittest.skipUnless(LINUX, "LINUX only")
+@unittest.skipIf(not LINUX, "LINUX only")
 class TestSystemNetwork(unittest.TestCase):
 
     def test_net_if_addrs_ips(self):
@@ -747,7 +750,7 @@ class TestSystemNetwork(unittest.TestCase):
             self.assertAlmostEqual(
                 stats.dropout, ifconfig_ret['dropout'], delta=10)
 
-    @unittest.skipUnless(which('ip'), "'ip' utility not available")
+    @unittest.skipIf(not which('ip'), "'ip' utility not available")
     @unittest.skipIf(TRAVIS, "skipped on Travis")
     def test_net_if_names(self):
         out = sh("ip addr").strip()
@@ -798,11 +801,10 @@ class TestSystemNetwork(unittest.TestCase):
 # =====================================================================
 
 
-@unittest.skipUnless(LINUX, "LINUX only")
+@unittest.skipIf(not LINUX, "LINUX only")
 class TestSystemDisks(unittest.TestCase):
 
-    @unittest.skipUnless(
-        hasattr(os, 'statvfs'), "os.statvfs() function not available")
+    @unittest.skipIf(not hasattr(os, 'statvfs'), "os.statvfs() not available")
     @skip_on_not_implemented()
     def test_disk_partitions_and_usage(self):
         # test psutil.disk_usage() and psutil.disk_partitions()
@@ -956,7 +958,7 @@ class TestSystemDisks(unittest.TestCase):
 # =====================================================================
 
 
-@unittest.skipUnless(LINUX, "LINUX only")
+@unittest.skipIf(not LINUX, "LINUX only")
 class TestMisc(unittest.TestCase):
 
     def test_boot_time(self):
@@ -1026,39 +1028,6 @@ class TestMisc(unittest.TestCase):
 
         self.assertEqual(psutil.PROCFS_PATH, '/proc')
 
-    @unittest.skipUnless(
-        get_kernel_version() >= (2, 6, 36),
-        "prlimit() not available on this Linux kernel version")
-    def test_prlimit_availability(self):
-        # prlimit() should be available starting from kernel 2.6.36
-        p = psutil.Process(os.getpid())
-        p.rlimit(psutil.RLIMIT_NOFILE)
-        # if prlimit() is supported *at least* these constants should
-        # be available
-        self.assertTrue(hasattr(psutil, "RLIM_INFINITY"))
-        self.assertTrue(hasattr(psutil, "RLIMIT_AS"))
-        self.assertTrue(hasattr(psutil, "RLIMIT_CORE"))
-        self.assertTrue(hasattr(psutil, "RLIMIT_CPU"))
-        self.assertTrue(hasattr(psutil, "RLIMIT_DATA"))
-        self.assertTrue(hasattr(psutil, "RLIMIT_FSIZE"))
-        self.assertTrue(hasattr(psutil, "RLIMIT_LOCKS"))
-        self.assertTrue(hasattr(psutil, "RLIMIT_MEMLOCK"))
-        self.assertTrue(hasattr(psutil, "RLIMIT_NOFILE"))
-        self.assertTrue(hasattr(psutil, "RLIMIT_NPROC"))
-        self.assertTrue(hasattr(psutil, "RLIMIT_RSS"))
-        self.assertTrue(hasattr(psutil, "RLIMIT_STACK"))
-
-    @unittest.skipUnless(
-        get_kernel_version() >= (3, 0),
-        "prlimit constants not available on this Linux kernel version")
-    def test_resource_consts_kernel_v(self):
-        # more recent constants
-        self.assertTrue(hasattr(psutil, "RLIMIT_MSGQUEUE"))
-        self.assertTrue(hasattr(psutil, "RLIMIT_NICE"))
-        self.assertTrue(hasattr(psutil, "RLIMIT_RTPRIO"))
-        self.assertTrue(hasattr(psutil, "RLIMIT_RTTIME"))
-        self.assertTrue(hasattr(psutil, "RLIMIT_SIGPENDING"))
-
     def test_boot_time_mocked(self):
         with mock.patch('psutil._pslinux.open', create=True) as m:
             self.assertRaises(
@@ -1122,7 +1091,7 @@ class TestMisc(unittest.TestCase):
         patch_point = 'builtins.open' if PY3 else '__builtin__.open'
         with mock.patch(patch_point, side_effect=open_mock):
             psutil.disk_io_counters()
-            self.assertTrue(flag)
+            assert flag
 
     def test_issue_687(self):
         # In case of thread ID:
@@ -1163,20 +1132,18 @@ class TestMisc(unittest.TestCase):
 # =====================================================================
 
 
-@unittest.skipUnless(LINUX, "LINUX only")
-@unittest.skipUnless(hasattr(psutil, "sensors_battery") and
-                     psutil.sensors_battery() is not None,
-                     "no battery")
+@unittest.skipIf(not LINUX, "LINUX only")
+@unittest.skipIf(not HAS_BATTERY, "no battery")
 class TestSensorsBattery(unittest.TestCase):
 
-    @unittest.skipUnless(which("acpi"), "acpi utility not available")
+    @unittest.skipIf(not which("acpi"), "acpi utility not available")
     def test_percent(self):
         out = sh("acpi -b")
         acpi_value = int(out.split(",")[1].strip().replace('%', ''))
         psutil_value = psutil.sensors_battery().percent
         self.assertAlmostEqual(acpi_value, psutil_value, delta=1)
 
-    @unittest.skipUnless(which("acpi"), "acpi utility not available")
+    @unittest.skipIf(not which("acpi"), "acpi utility not available")
     def test_power_plugged(self):
         out = sh("acpi -b")
         if 'unknown' in out.lower():
@@ -1347,7 +1314,7 @@ class TestSensorsBattery(unittest.TestCase):
             assert m.called
 
 
-@unittest.skipUnless(LINUX, "LINUX only")
+@unittest.skipIf(not LINUX, "LINUX only")
 class TestSensorsTemperatures(unittest.TestCase):
 
     @unittest.skipIf(TRAVIS, "unreliable on TRAVIS")
@@ -1393,7 +1360,7 @@ class TestSensorsTemperatures(unittest.TestCase):
                 self.assertEqual(temp.critical, 50.0)
 
 
-@unittest.skipUnless(LINUX, "LINUX only")
+@unittest.skipIf(not LINUX, "LINUX only")
 class TestSensorsFans(unittest.TestCase):
 
     def test_emulate_data(self):
@@ -1422,7 +1389,7 @@ class TestSensorsFans(unittest.TestCase):
 # =====================================================================
 
 
-@unittest.skipUnless(LINUX, "LINUX only")
+@unittest.skipIf(not LINUX, "LINUX only")
 class TestProcess(unittest.TestCase):
 
     def setUp(self):
@@ -1627,9 +1594,7 @@ class TestProcess(unittest.TestCase):
             self.assertEqual(err.exception.errno, errno.ENOENT)
             assert m.called
 
-    @unittest.skipUnless(
-        get_kernel_version() >= (2, 6, 36),
-        "prlimit() not available on this Linux kernel version")
+    @unittest.skipIf(not HAS_RLIMIT, "not supported")
     def test_rlimit_zombie(self):
         # Emulate a case where rlimit() raises ENOSYS, which may
         # happen in case of zombie process:
@@ -1656,7 +1621,7 @@ class TestProcess(unittest.TestCase):
         self.assertEqual(exc.exception.name, p.name())
 
 
-@unittest.skipUnless(LINUX, "LINUX only")
+@unittest.skipIf(not LINUX, "LINUX only")
 class TestProcessAgainstStatus(unittest.TestCase):
     """/proc/pid/stat and /proc/pid/status have many values in common.
     Whenever possible, psutil uses /proc/pid/stat (it's faster).
@@ -1739,7 +1704,7 @@ class TestProcessAgainstStatus(unittest.TestCase):
 # =====================================================================
 
 
-@unittest.skipUnless(LINUX, "LINUX only")
+@unittest.skipIf(not LINUX, "LINUX only")
 class TestUtils(unittest.TestCase):
 
     def test_open_text(self):
